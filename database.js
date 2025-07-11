@@ -15,24 +15,25 @@ export const getDatabase = async () => {
   return dbInstance;
 };
 
+// Updated sample users with fixed IDs from 401 to 410
 const sampleUsers = [
-  ['admin', '1234', 'Roban Khan Anik'],
-  ['user', '0000', 'Pampi Rani Das'],
-  ['user1', '1111', 'Arif Hossain'],
-  ['user2', '2222', 'Sadia Afrin'],
-  ['user3', '3333', 'Riyad Hasan'],
-  ['user4', '4444', 'Farzana Khatun'],
-  ['user5', '5555', 'Kamal Uddin'],
-  ['user6', '6666', 'Tanvir Islam'],
-  ['user7', '7777', 'Nasrin Sultana'],
-  ['user8', '8888', 'Ashik Rahman'],
+  ['401', 'admin', '1234', 'Roban Khan Anik'],
+  ['402', 'user', '0000', 'Pampi Rani Das'],
+  ['403', 'user1', '1111', 'Arif Hossain'],
+  ['404', 'user2', '2222', 'Sadia Afrin'],
+  ['405', 'user3', '3333', 'Riyad Hasan'],
+  ['406', 'user4', '4444', 'Farzana Khatun'],
+  ['407', 'user5', '5555', 'Kamal Uddin'],
+  ['408', 'user6', '6666', 'Tanvir Islam'],
+  ['409', 'user7', '7777', 'Nasrin Sultana'],
+  ['410', 'user8', '8888', 'Ashik Rahman'],
 ];
 
 export const initializeTables = async (db) => {
   // Disable foreign keys temporarily for migration
   await db.execAsync(`PRAGMA foreign_keys = OFF;`);
 
-  // Create new_users table with UUID string id
+  // Create new_users table with string id
   await db.execAsync(`CREATE TABLE IF NOT EXISTS new_users (
     id TEXT PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
@@ -59,12 +60,10 @@ export const initializeTables = async (db) => {
   }
   await db.execAsync(`ALTER TABLE new_users RENAME TO users;`);
 
-
-  // Create new_climate_records with UUID string id
+  // Create new_climate_records table without group_id
   await db.execAsync(`CREATE TABLE IF NOT EXISTS new_climate_records (
     id TEXT PRIMARY KEY,
     userId TEXT NOT NULL,
-    group_id TEXT,
     type TEXT,
     date TEXT,
     month TEXT,
@@ -88,11 +87,10 @@ export const initializeTables = async (db) => {
     for (const rec of oldRecords) {
       await db.runAsync(
         `INSERT OR IGNORE INTO new_climate_records
-        (id, userId, group_id, type, date, month, min, max, mean, total, device_code, latitude, longitude, is_live, entry_time, study_site)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+        (id, userId, type, date, month, min, max, mean, total, device_code, latitude, longitude, is_live, entry_time, study_site)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
         rec.id ? rec.id.toString() : uuidv4(),
         rec.userId,
-        rec.group_id,
         rec.type,
         rec.date,
         rec.month,
@@ -115,11 +113,10 @@ export const initializeTables = async (db) => {
   // Enable foreign keys back
   await db.execAsync(`PRAGMA foreign_keys = ON;`);
 
-  // Insert sample users if missing
-  for (const [username, password, fullName] of sampleUsers) {
+  // Insert sample users with fixed IDs if missing
+  for (const [id, username, password, fullName] of sampleUsers) {
     const existing = await db.getFirstAsync('SELECT * FROM users WHERE username = ?', username);
     if (!existing) {
-      const id = uuidv4();
       await db.runAsync(
         'INSERT INTO users (id, username, password, fullName) VALUES (?, ?, ?, ?);',
         id, username, password, fullName
@@ -184,15 +181,13 @@ export const insertClimateRecord = async (record) => {
   }
 
   const formattedMonth = month ? formatMonthToDateString(month.trim()) : null;
-  const group_id = uuidv4();
 
   await db.runAsync(
     `INSERT INTO climate_records
-      (id, userId, group_id, type, date, month, min, max, mean, total, device_code, latitude, longitude, is_live, entry_time, study_site)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 2, ?, ?);`,
+      (id, userId, type, date, month, min, max, mean, total, device_code, latitude, longitude, is_live, entry_time, study_site)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 2, ?, ?);`,
     id,
     userId,
-    group_id,
     type,
     formattedDate,
     formattedMonth,
@@ -312,7 +307,7 @@ export const backupUnsyncedData = async () => {
   try {
     const db = await getDatabase();
 
-    const unsyncedRecords = await db.getAllAsync(`SELECT * FROM climate_records WHERE is_live = 2`);
+    const unsyncedRecords = await db.getAllAsync('SELECT * FROM climate_records WHERE is_live = 2');
 
     if (unsyncedRecords.length === 0) {
       Alert.alert('Backup', '✅ No unsynced data found.');
@@ -341,17 +336,14 @@ export const backupUnsyncedData = async () => {
 
       const response = await fetch(BACKUP_API_URL, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: `data=${encodeURIComponent(jsonData)}`,
       });
 
       const resultText = await response.text();
 
       if (resultText.trim() !== '2') {
-        // Mark record synced
-        await db.runAsync(`UPDATE climate_records SET is_live = 1 WHERE id = ?`, record.id);
+        await db.runAsync('UPDATE climate_records SET is_live = 1 WHERE id = ?', record.id);
         console.log(`✔ Synced record ID ${record.id}`);
       } else {
         console.warn(`❌ Backup rejected for record ID ${record.id}`);
