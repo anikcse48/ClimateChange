@@ -20,16 +20,24 @@ const Tab = createBottomTabNavigator();
  
 
 
-function BackupScreen() {
+
+
+ 
+function BackupScreen({ navigation }) {
+  React.useEffect(() => {
+    const runBackup = async () => {
+      await backupUnsyncedData();
+      navigation.goBack(); // Optional: go back after backup
+    };
+    runBackup();
+  }, []);
+
   return (
     <View style={styles.center}>
-      <Text>Backup Screen</Text>
+      <Text>Backing up data...</Text>
     </View>
   );
 }
-
- 
-
 
 
 function ImportScreen() {
@@ -78,7 +86,7 @@ function HomeTabs({ userName }) {
       })}
     >
       <Tab.Screen name="DataForm" component={DataFormScreen} />
-      <Tab.Screen name="Backup" component={backupUnsyncedData} />
+      <Tab.Screen name="Backup" component={BackupScreen} />
     </Tab.Navigator>
   );
 }
