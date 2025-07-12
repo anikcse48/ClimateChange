@@ -488,7 +488,7 @@ export default function DataFormScreen() {
               onChangeText={(text) => setDailyHumidity({ ...dailyHumidity, max: text })}
             />
             <TextInput
-              label="গড় আদ্রতা "
+              label="গড় আদ্রতা * "
               mode="outlined"
               keyboardType="numeric"
               value={dailyHumidity.mean}
