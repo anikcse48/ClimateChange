@@ -1,645 +1,314 @@
-import React, { useState, useEffect } from 'react';
-import {
-  ScrollView,
-  StyleSheet,
-  Alert,
-  View,
-  TouchableWithoutFeedback,
-  Keyboard,
-} from 'react-native';
-import { TextInput, Button, Card, Text, Menu, Avatar } from 'react-native-paper';
-import { DatePickerInput } from 'react-native-paper-dates';
-import * as Location from 'expo-location';
-import { insertClimateRecord, getLoggedInUser } from './database';
-import { useNavigation } from '@react-navigation/native';
+// === database.js ===
+import * as SQLite from 'expo-sqlite';
+import * as FileSystem from 'expo-file-system';
+import { Platform, Alert } from 'react-native';
+import 'react-native-get-random-values';
+import { v4 as uuidv4 } from 'uuid';
 
+let dbInstance = null;
 
+export const getDatabase = async () => {
+  if (!dbInstance) {
+    dbInstance = await SQLite.openDatabaseAsync('climate.db');
+    await initializeTables(dbInstance);
+  }
+  return dbInstance;
+};
 
-// Helpers
-const pad = (n) => (n < 10 ? '0' + n : n);
+const sampleUsers = [
+  ['401', 'admin', '1234', 'Roban Khan Anik', 'Sylhet'],
+  ['402', 'user', '0000', 'Pampi Rani Das', 'ZK'],
+  ['403', 'user1', '1111', 'Arif Hossain', 'Sylhet'],
+  ['404', 'user2', '2222', 'Sadia Afrin', 'ZK'],
+  ['405', 'user3', '3333', 'Riyad Hasan', 'Sylhet'],
+  ['406', 'user4', '4444', 'Farzana Khatun', 'ZK'],
+  ['407', 'user5', '5555', 'Kamal Uddin', 'Sylhet'],
+  ['408', 'user6', '6666', 'Tanvir Islam', 'ZK'],
+  ['409', 'user7', '7777', 'Nasrin Sultana', 'Sylhet'],
+  ['410', 'user8', '8888', 'Ashik Rahman', 'ZK'],
+];
 
-const formatDateTime = (dateObj) => {
-  if (!dateObj) return null;
+export const initializeTables = async (db) => {
+  await db.execAsync(`PRAGMA foreign_keys = ON;`);
 
-  const date = new Date(dateObj);
-  if (isNaN(date.getTime())) return null;
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS users_ (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      password TEXT NOT NULL,
+      fullName TEXT NOT NULL,
+      region TEXT,
+      is_logged_in INTEGER DEFAULT 0
+    );
+  `);
 
-  // If time is midnight (picked from DatePicker), inject current time
-  if (date.getHours() === 0 && date.getMinutes() === 0 && date.getSeconds() === 0) {
+  for (const [id, username, password, fullName, region] of sampleUsers) {
+    const existing = await db.getFirstAsync('SELECT id FROM users_ WHERE id = ?', id);
+    if (!existing) {
+      await db.runAsync(
+        'INSERT INTO users_ (id, username, password, fullName, region) VALUES (?, ?, ?, ?, ?);',
+        id, username, password, fullName, region
+      );
+    }
+  }
+
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS climate_records_ (
+      id TEXT PRIMARY KEY,
+      userId TEXT NOT NULL,
+      type TEXT,
+      date TEXT,
+      month TEXT,
+      min REAL,
+      max REAL,
+      mean REAL,
+      total REAL,
+      device_code TEXT,
+      latitude REAL,
+      longitude REAL,
+      is_live INTEGER NOT NULL DEFAULT 2,
+      entry_time TEXT NOT NULL,
+      study_site TEXT,
+      FOREIGN KEY(userId) REFERENCES users_(id)
+    );
+  `);
+};
+
+const formatDateTime = (date) => {
+  const d = new Date(date);
+  const pad = (n) => (n < 10 ? '0' + n : n);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+};
+
+const formatMonthToDateString = (monthStr) => {
+  if (!monthStr) return null;
+  const isValid = /^\d{4}-(0[1-9]|1[0-2])$/.test(monthStr);
+  if (!isValid) throw new Error('Invalid month format. Use YYYY-MM');
+  const now = new Date();
+  const pad = (n) => (n < 10 ? '0' + n : n);
+  return `${monthStr}-01 ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+};
+
+export const insertClimateRecord = async (record) => {
+  const db = await getDatabase();
+  const {
+    userId,
+    type,
+    date,
+    month,
+    min,
+    max,
+    mean,
+    total,
+    device_code,
+    latitude,
+    longitude,
+    studySite
+  } = record;
+
+  if (!userId) throw new Error('Missing userId');
+
+  const user = await db.getFirstAsync('SELECT * FROM users_ WHERE id = ?', userId);
+  if (!user) throw new Error('User not found');
+
+  let prefix = '';
+  if (user.region === 'Sylhet') prefix = '600';
+  else if (user.region === 'ZK') prefix = '500';
+  else throw new Error('Region missing for user');
+
+  let id;
+  do {
+    const suffix = Math.floor(10000 + Math.random() * 90000);
+    id = `${prefix}${userId}${suffix}`;
+    const existing = await db.getFirstAsync('SELECT id FROM climate_records_ WHERE id = ?', id);
+    if (!existing) break;
+  } while (true);
+
+  const entry_time = formatDateTime(new Date());
+
+  let formattedDate = null;
+  if (date) {
+    const [y, m, d] = date.split('-');
     const now = new Date();
-    date.setHours(now.getHours(), now.getMinutes(), now.getSeconds());
+    const dateObj = new Date(parseInt(y), parseInt(m) - 1, parseInt(d), now.getHours(), now.getMinutes(), now.getSeconds());
+    formattedDate = formatDateTime(dateObj);
   }
 
-  const year = date.getFullYear();
-  const month = pad(date.getMonth() + 1);
-  const day = pad(date.getDate());
-  const hours = pad(date.getHours());
-  const minutes = pad(date.getMinutes());
-  const seconds = pad(date.getSeconds());
+  const formattedMonth = month ? formatMonthToDateString(month.trim()) : null;
 
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-};
-
-
-// Convert "YYYY-MM" → "YYYY-MM-01 00:00:00" for consistent DB storage
-// Convert "YYYY-MM" → "YYYY-MM-01 00:00:00" for consistent DB storage
-const formatMonthToDateTime = (monthString) => {
-  if (!monthString) return null;
-
-  // Check if it matches YYYY-MM
-  const regex = /^\d{4}-(0[1-9]|1[0-2])$/;
-  if (!regex.test(monthString)) {
-    throw new Error('Invalid month format. Use YYYY-MM and ensure month is between 01 and 12.');
-  }
-
-  return `${monthString}-01 00:00:00`;
-};
-
-
-export default function DataFormScreen() {
-  const [userId, setUserId] = useState('');
-  const [userName, setUserName] = useState('');
-  const navigation = useNavigation();
-
-  const [studySite, setStudySite] = useState('');
-  const [menuVisible, setMenuVisible] = useState(false);
-  const [profileMenuVisible, setProfileMenuVisible] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  const [dailyTemp, setDailyTemp] = useState({
-    date: new Date(),
-    min: '',
-    max: '',
-    mean: '',
-    deviceCode: '',
-  });
-  const [monthlyTemp, setMonthlyTemp] = useState({
-    month: '',
-    min: '',
-    max: '',
-    mean: '',
-    deviceCode: '',
-  });
-  const [dailyHumidity, setDailyHumidity] = useState({
-    date: new Date(),
-    min: '',
-    max: '',
-    mean: '',
-    deviceCode: '',
-  });
-  const [monthlyHumidity, setMonthlyHumidity] = useState({
-    month: '',
-    min: '',
-    max: '',
-    mean: '',
-    deviceCode: '',
-  });
-  const [dailyRain, setDailyRain] = useState({ date: new Date(), total: '', deviceCode: '' });
-  const [monthlyRain, setMonthlyRain] = useState({ month: '', total: '', deviceCode: '' });
-
-  useEffect(() => {
-    const fetchUser = async () => {
-      const user = await getLoggedInUser();
-      if (user) {
-        setUserId(user.id);
-        setUserName(user.fullName);
-        navigation.setOptions({
-          headerRight: () => (
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 10 }}>
-              <Menu
-                visible={profileMenuVisible}
-                onDismiss={() => setProfileMenuVisible(false)}
-                anchor={
-                  <Avatar.Text
-                    size={36}
-                    label={user.fullName
-                      .split(' ')
-                      .map((n) => n[0])
-                      .join('')
-                      .toUpperCase()
-                      .slice(0, 2)}
-                    style={{ backgroundColor: '#0ea5e9', marginLeft: 8 }}
-                    onPress={() => setProfileMenuVisible(true)}
-                  />
-                }
-              >
-                <Menu.Item
-                  onPress={() => {
-                    setProfileMenuVisible(false);
-                    navigation.navigate('Profile');
-                  }}
-                  title="Profile"
-                />
-                <Menu.Item
-                  onPress={() => {
-                    setProfileMenuVisible(false);
-                    navigation.navigate('Settings');
-                  }}
-                  title="Settings"
-                />
-                <Menu.Item
-                  onPress={() => {
-                    setProfileMenuVisible(false);
-                    navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
-                  }}
-                  title="Logout"
-                />
-              </Menu>
-              <Text style={{ marginLeft: 8, fontWeight: 'bold', color: '#0f172a' }}>
-                {user.fullName}
-              </Text>
-            </View>
-          ),
-        });
-      }
-    };
-    fetchUser();
-  }, [profileMenuVisible, navigation]);
-
-  const handleSave = async () => {
-
-    if (saving) return; // prevent double call
-
-  setSaving(true);
-  try {
-    // === VALIDATIONS ===
-
-    // Daily Temperature Validation
-    if (!dailyTemp.deviceCode || !dailyTemp.min || !dailyTemp.max || !dailyTemp.mean) {
-      Alert.alert('Missing Fields', 'Please fill all Daily Temperature fields.');
-      return;
-    }
-
-    // Daily Humidity Validation
-    if (!dailyHumidity.deviceCode || !dailyHumidity.min || !dailyHumidity.max || !dailyHumidity.mean) {
-      Alert.alert('Missing Fields', 'Please fill all Daily Humidity fields.');
-      return;
-    }
-
-    // Daily Rainfall Validation
-    if (!dailyRain.deviceCode || !dailyRain.total) {
-      Alert.alert('Missing Fields', 'Please fill all Daily Rainfall fields.');
-      return;
-    }
-
-    // Monthly Format Validator
-    const validateMonthFormat = (monthStr) => {
-      const regex = /^\d{4}-(0[1-9]|1[0-2])$/;
-      return regex.test(monthStr);
-    };
-
-    // Monthly Temperature Format
-    if (monthlyTemp.month && !validateMonthFormat(monthlyTemp.month.trim())) {
-      Alert.alert('Invalid Month', 'মাসিক তাপমাত্রার মাসের ফরম্যাট ভুল। অনুগ্রহ করে YYYY-MM ফরম্যাটে লিখুন।');
-      return;
-    }
-
-    // Monthly Humidity Format
-    if (monthlyHumidity.month && !validateMonthFormat(monthlyHumidity.month.trim())) {
-      Alert.alert('Invalid Month', 'মাসিক আর্দ্রতার মাসের ফরম্যাট ভুল। অনুগ্রহ করে YYYY-MM ফরম্যাটে লিখুন।');
-      return;
-    }
-
-    // Monthly Rain Format
-    if (monthlyRain.month && !validateMonthFormat(monthlyRain.month.trim())) {
-      Alert.alert('Invalid Month', 'মাসিক বৃষ্টিপাতের মাসের ফরম্যাট ভুল। অনুগ্রহ করে YYYY-MM ফরম্যাটে লিখুন।');
-      return;
-    }
-
-    // === Permissions ===
-    const { status } = await Location.requestForegroundPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission denied', 'Location permission is required.');
-      return;
-    }
-
-    const { coords } = await Location.getCurrentPositionAsync({});
-    const { latitude, longitude } = coords;
-
-    // === Data Insert ===
-    const inserts = [];
-
-    // Daily Temperature
-    inserts.push(
-      insertClimateRecord({
-        userId,
-        type: 'dailyTemp',
-        date: formatDateTime(dailyTemp.date),
-        min: parseFloat(dailyTemp.min),
-        max: parseFloat(dailyTemp.max),
-        mean: parseFloat(dailyTemp.mean),
-        device_code: dailyTemp.deviceCode,
-        latitude,
-        longitude,
-        studySite,
-      })
-    );
-
-    // Daily Humidity
-    inserts.push(
-      insertClimateRecord({
-        userId,
-        type: 'dailyHumidity',
-        date: formatDateTime(dailyHumidity.date),
-        min: parseFloat(dailyHumidity.min),
-        max: parseFloat(dailyHumidity.max),
-        mean: parseFloat(dailyHumidity.mean),
-        device_code: dailyHumidity.deviceCode,
-        latitude,
-        longitude,
-        studySite,
-      })
-    );
-
-    // Daily Rainfall
-    inserts.push(
-      insertClimateRecord({
-        userId,
-        type: 'dailyRain',
-        date: formatDateTime(dailyRain.date),
-        total: parseFloat(dailyRain.total),
-        device_code: dailyRain.deviceCode,
-        latitude,
-        longitude,
-        studySite,
-      })
-    );
-
-    // Monthly Temperature (Optional)
-    if (monthlyTemp.month && (monthlyTemp.min || monthlyTemp.max || monthlyTemp.mean)) {
-      inserts.push(
-        insertClimateRecord({
-          userId,
-          type: 'monthlyTemp',
-          month: monthlyTemp.month.trim(),
-          date: formatMonthToDateTime(monthlyTemp.month.trim()),
-          min: parseFloat(monthlyTemp.min) || null,
-          max: parseFloat(monthlyTemp.max) || null,
-          mean: parseFloat(monthlyTemp.mean) || null,
-          device_code: monthlyTemp.deviceCode,
-          latitude,
-          longitude,
-          studySite,
-        })
-      );
-    }
-
-    // Monthly Humidity (Optional)
-    if (monthlyHumidity.month && (monthlyHumidity.min || monthlyHumidity.max || monthlyHumidity.mean)) {
-      inserts.push(
-        insertClimateRecord({
-          userId,
-          type: 'monthlyHumidity',
-          month: monthlyHumidity.month.trim(),
-          date: formatMonthToDateTime(monthlyHumidity.month.trim()),
-          min: parseFloat(monthlyHumidity.min) || null,
-          max: parseFloat(monthlyHumidity.max) || null,
-          mean: parseFloat(monthlyHumidity.mean) || null,
-          device_code: monthlyHumidity.deviceCode,
-          latitude,
-          longitude,
-          studySite,
-        })
-      );
-    }
-
-    // Monthly Rainfall (Optional)
-    if (monthlyRain.month && monthlyRain.total) {
-      inserts.push(
-        insertClimateRecord({
-          userId,
-          type: 'monthlyRain',
-          month: monthlyRain.month.trim(),
-          date: formatMonthToDateTime(monthlyRain.month.trim()),
-          total: parseFloat(monthlyRain.total) || null,
-          device_code: monthlyRain.deviceCode,
-          latitude,
-          longitude,
-          studySite,
-        })
-      );
-    }
-
-    await Promise.all(inserts);
-    Alert.alert('✅ Success', 'Climate data saved locally.');
-
-    // Reset Form
-    setStudySite('');
-    setDailyTemp({ date: new Date(), min: '', max: '', mean: '', deviceCode: '' });
-    setMonthlyTemp({ month: '', min: '', max: '', mean: '', deviceCode: '' });
-    setDailyHumidity({ date: new Date(), min: '', max: '', mean: '', deviceCode: '' });
-    setMonthlyHumidity({ month: '', min: '', max: '', mean: '', deviceCode: '' });
-    setDailyRain({ date: new Date(), total: '', deviceCode: '' });
-    setMonthlyRain({ month: '', total: '', deviceCode: '' });
-
-  } catch (err) {
-    Alert.alert('❌ Error', err.message);
-  }finally {
-    setSaving(false); // allow future submissions
-  }
-};
-
-
-  return (
-    <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-      <ScrollView contentContainerStyle={styles.container}>
-        <Card style={styles.headerCard}>
-          <Card.Content>
-            <Text style={styles.heading}>ফর্ম ২: জলবায়ুর পরিমাপক এবং বায়ু দূষণকারী উপাদানের ফর্ম </Text>
-            <Text style={styles.subheading}>ফর্ম ২.১: জলবায়ুর পরিমাপক রেকর্ড ফর্ম </Text>
-          </Card.Content>
-        </Card>
-
-        <Card style={styles.card}>
-          <Card.Title title="গবেষণার স্থান " />
-          <Card.Content>
-            <Menu
-              visible={menuVisible}
-              onDismiss={() => setMenuVisible(false)}
-              anchor={
-                <TextInput
-                  label="গবেষণার স্থান"
-                  mode="outlined"
-                  value={studySite}
-                  onFocus={() => setMenuVisible(true)}
-                  right={<TextInput.Icon icon="menu-down" />}
-                />
-              }
-            >
-              <Menu.Item onPress={() => { setStudySite('01'); setMenuVisible(false); }} title="সিলেট শহর " />
-              <Menu.Item onPress={() => { setStudySite('02'); setMenuVisible(false); }} title="জকিগঞ্জ" />
-            </Menu>
-          </Card.Content>
-        </Card>
-
-        {/* Daily Temperature */}
-        <Card style={styles.card}>
-          <Card.Title title="দৈনিক তাপমাত্রার রেকর্ড " />
-          <Card.Content>
-            <TextInput
-              label="ডিভাইস কোড * "
-              mode="outlined"
-              value={dailyTemp.deviceCode}
-              onChangeText={(text) => setDailyTemp({ ...dailyTemp, deviceCode: text })}
-            />
-            <DatePickerInput
-              locale="en"
-              label="তারিখ"
-              value={dailyTemp.date}
-              onChange={(date) => setDailyTemp({ ...dailyTemp, date })}
-              inputMode="start"
-              mode="outlined"
-            />
-            <TextInput
-              label="সর্বনিম্ন তাপমাত্রা  (°C)*"
-              mode="outlined"
-              keyboardType="numeric"
-              value={dailyTemp.min}
-              onChangeText={(text) => setDailyTemp({ ...dailyTemp, min: text })}
-            />
-            <TextInput
-              label="সর্বোচ্চ তাপমাত্রা (°C)*"
-              mode="outlined"
-              keyboardType="numeric"
-              value={dailyTemp.max}
-              onChangeText={(text) => setDailyTemp({ ...dailyTemp, max: text })}
-            />
-            <TextInput
-              label="গড় তাপমাত্রা  (°C)*"
-              mode="outlined"
-              keyboardType="numeric"
-              value={dailyTemp.mean}
-              onChangeText={(text) => setDailyTemp({ ...dailyTemp, mean: text })}
-            />
-          </Card.Content>
-        </Card>
-
-        {/* Monthly Temperature */}
-        <Card style={styles.card}>
-          <Card.Title title="মাসিক তাপমাত্রার রেকর্ড " />
-          <Card.Content>
-            <TextInput
-              label="ডিভাইস কোড "
-              mode="outlined"
-              value={monthlyTemp.deviceCode}
-              onChangeText={(text) => setMonthlyTemp({ ...monthlyTemp, deviceCode: text })}
-            />
-            <TextInput
-              label="মাস"
-              mode="outlined"
-              value={monthlyTemp.month}
-              onChangeText={(text) => setMonthlyTemp({ ...monthlyTemp, month: text })}
-              placeholder="YYYY-MM"
-            />
-            <TextInput
-              label="সর্বনিম্ন তাপমাত্রা  (°C)"
-              mode="outlined"
-              keyboardType="numeric"
-              value={monthlyTemp.min}
-              onChangeText={(text) => setMonthlyTemp({ ...monthlyTemp, min: text })}
-            />
-            <TextInput
-              label="সর্বোচ্চ তাপমাত্রা (°C)"
-              mode="outlined"
-              keyboardType="numeric"
-              value={monthlyTemp.max}
-              onChangeText={(text) => setMonthlyTemp({ ...monthlyTemp, max: text })}
-            />
-            <TextInput
-              label="গড় তাপমাত্রা  (°C)"
-              mode="outlined"
-              keyboardType="numeric"
-              value={monthlyTemp.mean}
-              onChangeText={(text) => setMonthlyTemp({ ...monthlyTemp, mean: text })}
-            />
-          </Card.Content>
-        </Card>
-
-        {/* Daily Humidity */}
-        <Card style={styles.card}>
-          <Card.Title title="দৈনিক আদ্রতার রেকর্ড " />
-          <Card.Content>
-            <TextInput
-              label="ডিভাইস কোড *"
-              mode="outlined"
-              value={dailyHumidity.deviceCode}
-              onChangeText={(text) => setDailyHumidity({ ...dailyHumidity, deviceCode: text })}
-            />
-            <DatePickerInput
-              locale="en"
-              label="তারিখ"
-              value={dailyHumidity.date}
-              onChange={(date) => setDailyHumidity({ ...dailyHumidity, date })}
-              inputMode="start"
-              mode="outlined"
-            />
-            <TextInput
-              label="সর্বনিম্ন আদ্রতা *"
-              mode="outlined"
-              keyboardType="numeric"
-              value={dailyHumidity.min}
-              onChangeText={(text) => setDailyHumidity({ ...dailyHumidity, min: text })}
-            />
-            <TextInput
-              label="সর্বোচ্চ আদ্রতা *"
-              mode="outlined"
-              keyboardType="numeric"
-              value={dailyHumidity.max}
-              onChangeText={(text) => setDailyHumidity({ ...dailyHumidity, max: text })}
-            />
-            <TextInput
-              label="গড় আদ্রতা * "
-              mode="outlined"
-              keyboardType="numeric"
-              value={dailyHumidity.mean}
-              onChangeText={(text) => setDailyHumidity({ ...dailyHumidity, mean: text })}
-            />
-          </Card.Content>
-        </Card>
-
-        {/* Monthly Humidity */}
-        <Card style={styles.card}>
-          <Card.Title title="মাসিক আদ্রতার রেকর্ড " />
-          <Card.Content>
-            <TextInput
-              label="ডিভাইস কোড "
-              mode="outlined"
-              value={monthlyHumidity.deviceCode}
-              onChangeText={(text) => setMonthlyHumidity({ ...monthlyHumidity, deviceCode: text })}
-            />
-            <TextInput
-              label="মাস "
-              mode="outlined"
-              value={monthlyHumidity.month}
-              onChangeText={(text) => setMonthlyHumidity({ ...monthlyHumidity, month: text })}
-              placeholder="YYYY-MM"
-            />
-            <TextInput
-              label="সর্বনিম্ন আদ্রতা "
-              mode="outlined"
-              keyboardType="numeric"
-              value={monthlyHumidity.min}
-              onChangeText={(text) => setMonthlyHumidity({ ...monthlyHumidity, min: text })}
-            />
-            <TextInput
-              label="সর্বোচ্চ আদ্রতা "
-              mode="outlined"
-              keyboardType="numeric"
-              value={monthlyHumidity.max}
-              onChangeText={(text) => setMonthlyHumidity({ ...monthlyHumidity, max: text })}
-            />
-            <TextInput
-              label="গড় আদ্রতা "
-              mode="outlined"
-              keyboardType="numeric"
-              value={monthlyHumidity.mean}
-              onChangeText={(text) => setMonthlyHumidity({ ...monthlyHumidity, mean: text })}
-            />
-          </Card.Content>
-        </Card>
-
-        {/* Daily Rainfall */}
-        <Card style={styles.card}>
-          <Card.Title title="দৈনিক বৃষ্টিপাতের রেকর্ড " />
-          <Card.Content>
-            <TextInput
-              label="ডিভাইস কোড *"
-              mode="outlined"
-              value={dailyRain.deviceCode}
-              onChangeText={(text) => setDailyRain({ ...dailyRain, deviceCode: text })}
-            />
-            <DatePickerInput
-              locale="en"
-              label="তারিখ"
-              value={dailyRain.date}
-              onChange={(date) => setDailyRain({ ...dailyRain, date })}
-              inputMode="start"
-              mode="outlined"
-            />
-            <TextInput
-              label="মোট বৃষ্টিপাত *"
-              mode="outlined"
-              keyboardType="numeric"
-              value={dailyRain.total}
-              onChangeText={(text) => setDailyRain({ ...dailyRain, total: text })}
-            />
-          </Card.Content>
-        </Card>
-
-        {/* Monthly Rainfall */}
-        <Card style={styles.card}>
-          <Card.Title title="মাসিক বৃষ্টিপাতের রেকর্ড" />
-          <Card.Content>
-            <TextInput
-              label="ডিভাইস কোড "
-              mode="outlined"
-              value={monthlyRain.deviceCode}
-              onChangeText={(text) => setMonthlyRain({ ...monthlyRain, deviceCode: text })}
-            />
-            <TextInput
-              label="মাস "
-              mode="outlined"
-              value={monthlyRain.month}
-              onChangeText={(text) => setMonthlyRain({ ...monthlyRain, month: text })}
-              placeholder="YYYY-MM"
-            />
-            <TextInput
-              label="মোট বৃষ্টিপাত"
-              mode="outlined"
-              keyboardType="numeric"
-              value={monthlyRain.total}
-              onChangeText={(text) => setMonthlyRain({ ...monthlyRain, total: text })}
-            />
-          </Card.Content>
-        </Card>
-
-        {/* Save Button */}
-        <Button
-  mode="contained"
-  icon="content-save"
-  onPress={handleSave}
-  style={styles.button}
-  disabled={saving}
-  loading={saving} // nice visual feedback
->
-  Save Record
-</Button>
-      </ScrollView>
-    </TouchableWithoutFeedback>
+  await db.runAsync(
+    `INSERT INTO climate_records_
+     (id, userId, type, date, month, min, max, mean, total, device_code, latitude, longitude, is_live, entry_time, study_site)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 2, ?, ?);`,
+    id,
+    userId,
+    type,
+    formattedDate,
+    formattedMonth,
+    min ?? null,
+    max ?? null,
+    mean ?? null,
+    total ?? null,
+    device_code || '',
+    latitude ?? null,
+    longitude ?? null,
+    entry_time,
+    studySite || ''
   );
-}
+};
 
-const styles = StyleSheet.create({
-  container: {
-    padding: 16,
-    backgroundColor: '#f1f5f9',
-  },
-  card: {
-    marginBottom: 16,
-    borderRadius: 12,
-    backgroundColor: '#ffffff',
-    elevation: 3,
-  },
-  button: {
-    marginVertical: 24,
-    backgroundColor: '#541e7c',
-    paddingVertical: 8,
-  },
-  headerCard: {
-    marginBottom: 20,
-    backgroundColor: '#e0f2fe',
-    borderRadius: 12,
-    padding: 16,
-    elevation: 4,
-  },
-  heading: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#0f172a',
-    marginBottom: 4,
-  },
-  subheading: {
-    fontSize: 16,
-    color: '#334155',
-  },
-});
+export const validateUser = async (username, password) => {
+  const db = await getDatabase();
+  await db.runAsync(`UPDATE users_ SET is_logged_in = 0`);
+  await db.runAsync(`UPDATE users_ SET is_logged_in = 1 WHERE username = ? AND password = ?`, username, password);
+  return await db.getFirstAsync('SELECT * FROM users_ WHERE username = ? AND password = ?;', username, password);
+};
+
+export const logoutUser = async () => {
+  const db = await getDatabase();
+  await db.runAsync(`UPDATE users_ SET is_logged_in = 0`);
+};
+
+export const getLoggedInUser = async () => {
+  const db = await getDatabase();
+  return await db.getFirstAsync(`SELECT * FROM users_ WHERE is_logged_in = 1 LIMIT 1`);
+};
+
+export const updateClimateRecord = async (record) => {
+  const db = await getDatabase();
+  await db.runAsync(
+    `UPDATE climate_records_ SET
+      type = ?, date = ?, month = ?, min = ?, max = ?, mean = ?, total = ?,
+      device_code = ?, latitude = ?, longitude = ?, is_live = ?, entry_time = ?, study_site = ?
+     WHERE id = ?;`,
+    record.type,
+    record.date,
+    record.month,
+    record.min,
+    record.max,
+    record.mean,
+    record.total,
+    record.device_code,
+    record.latitude,
+    record.longitude,
+    record.is_live ?? 2,
+    record.entry_time ?? new Date().toISOString(),
+    record.studySite ?? '',
+    record.id
+  );
+};
+
+export const deleteClimateRecord = async (id) => {
+  const db = await getDatabase();
+  await db.runAsync('DELETE FROM climate_records_ WHERE id = ?', id);
+};
+
+export const getAllClimateRecords = async () => {
+  const db = await getDatabase();
+  return await db.getAllAsync(`SELECT * FROM climate_records_ ORDER BY entry_time DESC`);
+};
+
+export const markRecordAsBackedUp = async (id) => {
+  const db = await getDatabase();
+  await db.runAsync('UPDATE climate_records_ SET is_live = 1 WHERE id = ?;', id);
+};
+
+export const exportDatabaseToLocalStorage = async () => {
+  const dbName = 'climate.db';
+  const sourceUri = `${FileSystem.documentDirectory}SQLite/${dbName}`;
+
+  const fileInfo = await FileSystem.getInfoAsync(sourceUri);
+  if (!fileInfo.exists) {
+    Alert.alert('Error', 'Database file not found!');
+    return;
+  }
+
+  if (Platform.OS === 'android') {
+    try {
+      const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (!permissions.granted) {
+        Alert.alert('Permission denied', 'Cannot access storage');
+        return;
+      }
+      const destUri = await FileSystem.StorageAccessFramework.createFileAsync(
+        permissions.directoryUri,
+        dbName,
+        'application/octet-stream'
+      );
+
+      const dbFileData = await FileSystem.readAsStringAsync(sourceUri, { encoding: FileSystem.EncodingType.Base64 });
+      await FileSystem.writeAsStringAsync(destUri, dbFileData, { encoding: FileSystem.EncodingType.Base64 });
+
+      Alert.alert('Success', `Database saved to Downloads folder.`);
+    } catch (error) {
+      Alert.alert('Error', error.message);
+    }
+  } else if (Platform.OS === 'ios') {
+    const destUri = `${FileSystem.documentDirectory}${dbName}`;
+    await FileSystem.copyAsync({ from: sourceUri, to: destUri });
+    Alert.alert('Success', 'Database saved to app documents folder.');
+  } else {
+    Alert.alert('Unsupported platform');
+  }
+};
+
+const BACKUP_API_URL = 'http://27.147.225.171:8080/ClimateChange/Backup_API/Form_2.php';
+
+export const backupUnsyncedData = async () => {
+  try {
+    const db = await getDatabase();
+    const unsyncedRecords = await db.getAllAsync('SELECT * FROM climate_records_ WHERE is_live = 2');
+
+    if (unsyncedRecords.length === 0) {
+      Alert.alert('Backup', '✅ No unsynced data found.');
+      return;
+    }
+
+    for (const record of unsyncedRecords) {
+      const user = await db.getFirstAsync('SELECT * FROM users_ WHERE id = ?', record.userId);
+      if (!user) {
+        console.warn(`⚠ Skipping record ID ${record.id} due to missing user.`);
+        continue;
+      }
+
+      const recordArray = [
+        record.id,
+        record.study_site || '',
+        record.type || '',
+        record.date || '',
+        record.month || '',
+        record.min ?? null,
+        record.max ?? null,
+        record.mean ?? null,
+        record.total ?? null,
+        record.device_code || '',
+        record.latitude ?? null,
+        record.longitude ?? null,
+        record.entry_time || '',
+        record.userId || '',
+      ];
+
+      const jsonData = JSON.stringify(recordArray);
+
+      const response = await fetch(BACKUP_API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `data=${encodeURIComponent(jsonData)}`,
+      });
+
+      const resultText = await response.text();
+
+      if (resultText.trim() !== '2') {
+        await db.runAsync('UPDATE climate_records_ SET is_live = 1 WHERE id = ?', record.id);
+        console.log(`✔ Synced record ID ${record.id}`);
+      } else {
+        console.warn(`❌ Backup rejected for record ID ${record.id}: Response = "${resultText.trim()}"`);
+      }
+    }
+
+    Alert.alert('Backup Complete', '✅ All unsynced records are backed up.');
+  } catch (error) {
+    console.error('❌ Backup error:', error);
+    Alert.alert('Error', '❌ Failed to back up data. Please check your network or API.');
+  }
+};
