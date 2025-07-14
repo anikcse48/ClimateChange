@@ -13,8 +13,6 @@ import * as Location from 'expo-location';
 import { insertClimateRecord, getLoggedInUser } from './database';
 import { useNavigation } from '@react-navigation/native';
 
-
-
 // Helpers
 const pad = (n) => (n < 10 ? '0' + n : n);
 
@@ -40,22 +38,6 @@ const formatDateTime = (dateObj) => {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 };
 
-
-// Convert "YYYY-MM" → "YYYY-MM-01 00:00:00" for consistent DB storage
-// Convert "YYYY-MM" → "YYYY-MM-01 00:00:00" for consistent DB storage
-const formatMonthToDateTime = (monthString) => {
-  if (!monthString) return null;
-
-  // Check if it matches YYYY-MM
-  const regex = /^\d{4}-(0[1-9]|1[0-2])$/;
-  if (!regex.test(monthString)) {
-    throw new Error('Invalid month format. Use YYYY-MM and ensure month is between 01 and 12.');
-  }
-
-  return `${monthString}-01 00:00:00`;
-};
-
-
 export default function DataFormScreen() {
   const [userId, setUserId] = useState('');
   const [userName, setUserName] = useState('');
@@ -74,7 +56,7 @@ export default function DataFormScreen() {
     deviceCode: '',
   });
   const [monthlyTemp, setMonthlyTemp] = useState({
-    month: '',
+    month: null, // Changed to Date object or null
     min: '',
     max: '',
     mean: '',
@@ -88,14 +70,18 @@ export default function DataFormScreen() {
     deviceCode: '',
   });
   const [monthlyHumidity, setMonthlyHumidity] = useState({
-    month: '',
+    month: null, // Changed to Date object or null
     min: '',
     max: '',
     mean: '',
     deviceCode: '',
   });
   const [dailyRain, setDailyRain] = useState({ date: new Date(), total: '', deviceCode: '' });
-  const [monthlyRain, setMonthlyRain] = useState({ month: '', total: '', deviceCode: '' });
+  const [monthlyRain, setMonthlyRain] = useState({
+    month: null, // Changed to Date object or null
+    total: '',
+    deviceCode: '',
+  });
 
   useEffect(() => {
     const fetchUser = async () => {
@@ -157,195 +143,180 @@ export default function DataFormScreen() {
   }, [profileMenuVisible, navigation]);
 
   const handleSave = async () => {
-
     if (saving) return; // prevent double call
 
-  setSaving(true);
-  try {
-    // === VALIDATIONS ===
+    setSaving(true);
+    try {
+      // === VALIDATIONS ===
 
-    // Daily Temperature Validation
-    if (!dailyTemp.deviceCode || !dailyTemp.min || !dailyTemp.max || !dailyTemp.mean) {
-      Alert.alert('Missing Fields', 'Please fill all Daily Temperature fields.');
-      return;
-    }
+      // Daily Temperature Validation
+      if (!dailyTemp.deviceCode || !dailyTemp.min || !dailyTemp.max || !dailyTemp.mean) {
+        Alert.alert('Missing Fields', 'Please fill all Daily Temperature fields.');
+        setSaving(false);
+        return;
+      }
 
-    // Daily Humidity Validation
-    if (!dailyHumidity.deviceCode || !dailyHumidity.min || !dailyHumidity.max || !dailyHumidity.mean) {
-      Alert.alert('Missing Fields', 'Please fill all Daily Humidity fields.');
-      return;
-    }
+      // Daily Humidity Validation
+      if (!dailyHumidity.deviceCode || !dailyHumidity.min || !dailyHumidity.max || !dailyHumidity.mean) {
+        Alert.alert('Missing Fields', 'Please fill all Daily Humidity fields.');
+        setSaving(false);
+        return;
+      }
 
-    // Daily Rainfall Validation
-    if (!dailyRain.deviceCode || !dailyRain.total) {
-      Alert.alert('Missing Fields', 'Please fill all Daily Rainfall fields.');
-      return;
-    }
+      // Daily Rainfall Validation
+      if (!dailyRain.deviceCode || !dailyRain.total) {
+        Alert.alert('Missing Fields', 'Please fill all Daily Rainfall fields.');
+        setSaving(false);
+        return;
+      }
 
-    // Monthly Format Validator
-    const validateMonthFormat = (monthStr) => {
-      const regex = /^\d{4}-(0[1-9]|1[0-2])$/;
-      return regex.test(monthStr);
-    };
+      // === Permissions ===
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission denied', 'Location permission is required.');
+        setSaving(false);
+        return;
+      }
 
-    // Monthly Temperature Format
-    if (monthlyTemp.month && !validateMonthFormat(monthlyTemp.month.trim())) {
-      Alert.alert('Invalid Month', 'মাসিক তাপমাত্রার মাসের ফরম্যাট ভুল। অনুগ্রহ করে YYYY-MM ফরম্যাটে লিখুন।');
-      return;
-    }
+      const { coords } = await Location.getCurrentPositionAsync({});
+      const { latitude, longitude } = coords;
 
-    // Monthly Humidity Format
-    if (monthlyHumidity.month && !validateMonthFormat(monthlyHumidity.month.trim())) {
-      Alert.alert('Invalid Month', 'মাসিক আর্দ্রতার মাসের ফরম্যাট ভুল। অনুগ্রহ করে YYYY-MM ফরম্যাটে লিখুন।');
-      return;
-    }
+      // === Data Insert ===
+      const inserts = [];
 
-    // Monthly Rain Format
-    if (monthlyRain.month && !validateMonthFormat(monthlyRain.month.trim())) {
-      Alert.alert('Invalid Month', 'মাসিক বৃষ্টিপাতের মাসের ফরম্যাট ভুল। অনুগ্রহ করে YYYY-MM ফরম্যাটে লিখুন।');
-      return;
-    }
-
-    // === Permissions ===
-    const { status } = await Location.requestForegroundPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission denied', 'Location permission is required.');
-      return;
-    }
-
-    const { coords } = await Location.getCurrentPositionAsync({});
-    const { latitude, longitude } = coords;
-
-    // === Data Insert ===
-    const inserts = [];
-
-    // Daily Temperature
-    inserts.push(
-      insertClimateRecord({
-        userId,
-        type: 'dailyTemp',
-        date: formatDateTime(dailyTemp.date),
-        min: parseFloat(dailyTemp.min),
-        max: parseFloat(dailyTemp.max),
-        mean: parseFloat(dailyTemp.mean),
-        device_code: dailyTemp.deviceCode,
-        latitude,
-        longitude,
-        studySite,
-      })
-    );
-
-    // Daily Humidity
-    inserts.push(
-      insertClimateRecord({
-        userId,
-        type: 'dailyHumidity',
-        date: formatDateTime(dailyHumidity.date),
-        min: parseFloat(dailyHumidity.min),
-        max: parseFloat(dailyHumidity.max),
-        mean: parseFloat(dailyHumidity.mean),
-        device_code: dailyHumidity.deviceCode,
-        latitude,
-        longitude,
-        studySite,
-      })
-    );
-
-    // Daily Rainfall
-    inserts.push(
-      insertClimateRecord({
-        userId,
-        type: 'dailyRain',
-        date: formatDateTime(dailyRain.date),
-        total: parseFloat(dailyRain.total),
-        device_code: dailyRain.deviceCode,
-        latitude,
-        longitude,
-        studySite,
-      })
-    );
-
-    // Monthly Temperature (Optional)
-    if (monthlyTemp.month && (monthlyTemp.min || monthlyTemp.max || monthlyTemp.mean)) {
+      // Daily Temperature
       inserts.push(
         insertClimateRecord({
           userId,
-          type: 'monthlyTemp',
-          month: monthlyTemp.month.trim(),
-          date: formatMonthToDateTime(monthlyTemp.month.trim()),
-          min: parseFloat(monthlyTemp.min) || null,
-          max: parseFloat(monthlyTemp.max) || null,
-          mean: parseFloat(monthlyTemp.mean) || null,
-          device_code: monthlyTemp.deviceCode,
+          type: 'dailyTemp',
+          date: formatDateTime(dailyTemp.date),
+          min: parseFloat(dailyTemp.min),
+          max: parseFloat(dailyTemp.max),
+          mean: parseFloat(dailyTemp.mean),
+          device_code: dailyTemp.deviceCode,
           latitude,
           longitude,
           studySite,
         })
       );
-    }
 
-    // Monthly Humidity (Optional)
-    if (monthlyHumidity.month && (monthlyHumidity.min || monthlyHumidity.max || monthlyHumidity.mean)) {
+      // Daily Humidity
       inserts.push(
         insertClimateRecord({
           userId,
-          type: 'monthlyHumidity',
-          month: monthlyHumidity.month.trim(),
-          date: formatMonthToDateTime(monthlyHumidity.month.trim()),
-          min: parseFloat(monthlyHumidity.min) || null,
-          max: parseFloat(monthlyHumidity.max) || null,
-          mean: parseFloat(monthlyHumidity.mean) || null,
-          device_code: monthlyHumidity.deviceCode,
+          type: 'dailyHumidity',
+          date: formatDateTime(dailyHumidity.date),
+          min: parseFloat(dailyHumidity.min),
+          max: parseFloat(dailyHumidity.max),
+          mean: parseFloat(dailyHumidity.mean),
+          device_code: dailyHumidity.deviceCode,
           latitude,
           longitude,
           studySite,
         })
       );
-    }
 
-    // Monthly Rainfall (Optional)
-    if (monthlyRain.month && monthlyRain.total) {
+      // Daily Rainfall
       inserts.push(
         insertClimateRecord({
           userId,
-          type: 'monthlyRain',
-          month: monthlyRain.month.trim(),
-          date: formatMonthToDateTime(monthlyRain.month.trim()),
-          total: parseFloat(monthlyRain.total) || null,
-          device_code: monthlyRain.deviceCode,
+          type: 'dailyRain',
+          date: formatDateTime(dailyRain.date),
+          total: parseFloat(dailyRain.total),
+          device_code: dailyRain.deviceCode,
           latitude,
           longitude,
           studySite,
         })
       );
+
+      // Monthly Temperature (Optional)
+      if (
+        monthlyTemp.month &&
+        (monthlyTemp.min || monthlyTemp.max || monthlyTemp.mean)
+      ) {
+        inserts.push(
+          insertClimateRecord({
+            userId,
+            type: 'monthlyTemp',
+            month: formatDateTime(monthlyTemp.month),
+            date: formatDateTime(monthlyTemp.month),
+            min: parseFloat(monthlyTemp.min) || null,
+            max: parseFloat(monthlyTemp.max) || null,
+            mean: parseFloat(monthlyTemp.mean) || null,
+            device_code: monthlyTemp.deviceCode,
+            latitude,
+            longitude,
+            studySite,
+          })
+        );
+      }
+
+      // Monthly Humidity (Optional)
+      if (
+        monthlyHumidity.month &&
+        (monthlyHumidity.min || monthlyHumidity.max || monthlyHumidity.mean)
+      ) {
+        inserts.push(
+          insertClimateRecord({
+            userId,
+            type: 'monthlyHumidity',
+            month: formatDateTime(monthlyHumidity.month),
+            date: formatDateTime(monthlyHumidity.month),
+            min: parseFloat(monthlyHumidity.min) || null,
+            max: parseFloat(monthlyHumidity.max) || null,
+            mean: parseFloat(monthlyHumidity.mean) || null,
+            device_code: monthlyHumidity.deviceCode,
+            latitude,
+            longitude,
+            studySite,
+          })
+        );
+      }
+
+      // Monthly Rainfall (Optional)
+      if (monthlyRain.month && monthlyRain.total) {
+        inserts.push(
+          insertClimateRecord({
+            userId,
+            type: 'monthlyRain',
+            month: formatDateTime(monthlyRain.month),
+            date: formatDateTime(monthlyRain.month),
+            total: parseFloat(monthlyRain.total) || null,
+            device_code: monthlyRain.deviceCode,
+            latitude,
+            longitude,
+            studySite,
+          })
+        );
+      }
+
+      await Promise.all(inserts);
+      Alert.alert('✅ Success', 'Climate data saved locally.');
+
+      // Reset Form
+      setStudySite('');
+      setDailyTemp({ date: new Date(), min: '', max: '', mean: '', deviceCode: '' });
+      setMonthlyTemp({ month: null, min: '', max: '', mean: '', deviceCode: '' });
+      setDailyHumidity({ date: new Date(), min: '', max: '', mean: '', deviceCode: '' });
+      setMonthlyHumidity({ month: null, min: '', max: '', mean: '', deviceCode: '' });
+      setDailyRain({ date: new Date(), total: '', deviceCode: '' });
+      setMonthlyRain({ month: null, total: '', deviceCode: '' });
+    } catch (err) {
+      Alert.alert('❌ Error', err.message);
+    } finally {
+      setSaving(false); // allow future submissions
     }
-
-    await Promise.all(inserts);
-    Alert.alert('✅ Success', 'Climate data saved locally.');
-
-    // Reset Form
-    setStudySite('');
-    setDailyTemp({ date: new Date(), min: '', max: '', mean: '', deviceCode: '' });
-    setMonthlyTemp({ month: '', min: '', max: '', mean: '', deviceCode: '' });
-    setDailyHumidity({ date: new Date(), min: '', max: '', mean: '', deviceCode: '' });
-    setMonthlyHumidity({ month: '', min: '', max: '', mean: '', deviceCode: '' });
-    setDailyRain({ date: new Date(), total: '', deviceCode: '' });
-    setMonthlyRain({ month: '', total: '', deviceCode: '' });
-
-  } catch (err) {
-    Alert.alert('❌ Error', err.message);
-  }finally {
-    setSaving(false); // allow future submissions
-  }
-};
-
+  };
 
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
       <ScrollView contentContainerStyle={styles.container}>
         <Card style={styles.headerCard}>
           <Card.Content>
-            <Text style={styles.heading}>ফর্ম ২: জলবায়ুর পরিমাপক এবং বায়ু দূষণকারী উপাদানের ফর্ম </Text>
+            <Text style={styles.heading}>
+              ফর্ম ২: জলবায়ুর পরিমাপক এবং বায়ু দূষণকারী উপাদানের ফর্ম
+            </Text>
             <Text style={styles.subheading}>ফর্ম ২.১: জলবায়ুর পরিমাপক রেকর্ড ফর্ম </Text>
           </Card.Content>
         </Card>
@@ -424,12 +395,13 @@ export default function DataFormScreen() {
               value={monthlyTemp.deviceCode}
               onChangeText={(text) => setMonthlyTemp({ ...monthlyTemp, deviceCode: text })}
             />
-            <TextInput
+            <DatePickerInput
+              locale="en"
               label="মাস"
-              mode="outlined"
               value={monthlyTemp.month}
-              onChangeText={(text) => setMonthlyTemp({ ...monthlyTemp, month: text })}
-              placeholder="YYYY-MM"
+              onChange={(date) => setMonthlyTemp({ ...monthlyTemp, month: date })}
+              mode="outlined"
+              inputMode="start"
             />
             <TextInput
               label="সর্বনিম্ন তাপমাত্রা  (°C)"
@@ -507,12 +479,13 @@ export default function DataFormScreen() {
               value={monthlyHumidity.deviceCode}
               onChangeText={(text) => setMonthlyHumidity({ ...monthlyHumidity, deviceCode: text })}
             />
-            <TextInput
-              label="মাস "
-              mode="outlined"
+            <DatePickerInput
+              locale="en"
+              label="মাস"
               value={monthlyHumidity.month}
-              onChangeText={(text) => setMonthlyHumidity({ ...monthlyHumidity, month: text })}
-              placeholder="YYYY-MM"
+              onChange={(date) => setMonthlyHumidity({ ...monthlyHumidity, month: date })}
+              mode="outlined"
+              inputMode="start"
             />
             <TextInput
               label="সর্বনিম্ন আদ্রতা "
@@ -557,7 +530,7 @@ export default function DataFormScreen() {
               mode="outlined"
             />
             <TextInput
-              label="মোট বৃষ্টিপাত *"
+              label="মোট বৃষ্টিপাত (মিমি)*"
               mode="outlined"
               keyboardType="numeric"
               value={dailyRain.total}
@@ -568,7 +541,7 @@ export default function DataFormScreen() {
 
         {/* Monthly Rainfall */}
         <Card style={styles.card}>
-          <Card.Title title="মাসিক বৃষ্টিপাতের রেকর্ড" />
+          <Card.Title title="মাসিক বৃষ্টিপাতের রেকর্ড " />
           <Card.Content>
             <TextInput
               label="ডিভাইস কোড "
@@ -576,15 +549,16 @@ export default function DataFormScreen() {
               value={monthlyRain.deviceCode}
               onChangeText={(text) => setMonthlyRain({ ...monthlyRain, deviceCode: text })}
             />
-            <TextInput
-              label="মাস "
-              mode="outlined"
+            <DatePickerInput
+              locale="en"
+              label="মাস"
               value={monthlyRain.month}
-              onChangeText={(text) => setMonthlyRain({ ...monthlyRain, month: text })}
-              placeholder="YYYY-MM"
+              onChange={(date) => setMonthlyRain({ ...monthlyRain, month: date })}
+              mode="outlined"
+              inputMode="start"
             />
             <TextInput
-              label="মোট বৃষ্টিপাত"
+              label="মোট বৃষ্টিপাত (মিমি)"
               mode="outlined"
               keyboardType="numeric"
               value={monthlyRain.total}
@@ -593,17 +567,15 @@ export default function DataFormScreen() {
           </Card.Content>
         </Card>
 
-        {/* Save Button */}
         <Button
-  mode="contained"
-  icon="content-save"
-  onPress={handleSave}
-  style={styles.button}
-  disabled={saving}
-  loading={saving} // nice visual feedback
->
-  Save Record
-</Button>
+          mode="contained"
+          onPress={handleSave}
+          style={{ margin: 12 }}
+          loading={saving}
+          disabled={saving}
+        >
+          সংরক্ষণ করুন
+        </Button>
       </ScrollView>
     </TouchableWithoutFeedback>
   );
@@ -611,35 +583,26 @@ export default function DataFormScreen() {
 
 const styles = StyleSheet.create({
   container: {
-    padding: 16,
-    backgroundColor: '#f1f5f9',
+    paddingBottom: 60,
   },
   card: {
-    marginBottom: 16,
-    borderRadius: 12,
-    backgroundColor: '#ffffff',
-    elevation: 3,
-  },
-  button: {
-    marginVertical: 24,
-    backgroundColor: '#541e7c',
-    paddingVertical: 8,
+    margin: 12,
   },
   headerCard: {
-    marginBottom: 20,
-    backgroundColor: '#e0f2fe',
-    borderRadius: 12,
-    padding: 16,
-    elevation: 4,
+    marginBottom: 12,
+    marginHorizontal: 12,
+    padding: 12,
+    backgroundColor: '#f0f9ff',
   },
   heading: {
-    fontSize: 22,
     fontWeight: 'bold',
-    color: '#0f172a',
-    marginBottom: 4,
+    fontSize: 18,
+    color: '#0ea5e9',
   },
   subheading: {
-    fontSize: 16,
-    color: '#334155',
+    fontWeight: '600',
+    fontSize: 14,
+    color: '#0f172a',
+    marginTop: 6,
   },
 });
