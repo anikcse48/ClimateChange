@@ -82,12 +82,19 @@ const formatDateTime = (date) => {
 
 const formatMonthToDateString = (monthStr) => {
   if (!monthStr) return null;
-  const isValid = /^\d{4}-(0[1-9]|1[0-2])$/.test(monthStr);
-  if (!isValid) throw new Error('Invalid month format. Use YYYY-MM');
+  const [year, monthStrPart, dayStrPart] = monthStr.split('-');
+  if (!year || !monthStrPart || !dayStrPart) return null;
+
+  const month = parseInt(monthStrPart, 10);
+  const day = parseInt(dayStrPart, 10);
+
   const now = new Date();
   const pad = (n) => (n < 10 ? '0' + n : n);
-  return `${monthStr}-01 ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+
+  return `${year}-${pad(month)}-${pad(day)} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
 };
+
+
 
 export const insertClimateRecord = async (record) => {
   const db = await getDatabase();
