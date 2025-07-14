@@ -97,6 +97,15 @@ const ClimateDashboard = () => {
     }
   };
 
+  const formatMonth = (monthStr) => {
+  if (!monthStr) return '-';
+  try {
+    return monthStr.split('T')[0]; // handles both T and space-separated formats
+  } catch {
+    return monthStr;
+  }
+};
+
   return (
     <View style={styles.container}>
       <Text style={styles.heading}>Climate Dashboard</Text>
@@ -225,8 +234,8 @@ const ClimateDashboard = () => {
                   {formatDate(item.date)}
                 </Text>
                 <Text style={[styles.cell, { width: columnWidths.month }]}>
-                  {item.month || '-'}
-                </Text>
+  {formatMonth(item.month)}
+</Text>
                 <Text style={[styles.cell, { width: columnWidths.min }]}>
                   {item.min ?? '-'}
                 </Text>
